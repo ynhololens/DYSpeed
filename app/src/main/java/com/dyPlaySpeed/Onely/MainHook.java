@@ -32,6 +32,7 @@ public class MainHook implements de.robv.android.xposed.IXposedHookLoadPackage {
             if (!isDouyinPackage(pkg)) return;
             if (!proc.equals(pkg)) return;
 
+            initCapturedPrefs(pkg);
             hookAll(lpparam);
             延迟重试_并启动强制倍速(lpparam);
 
@@ -84,8 +85,13 @@ public class MainHook implements de.robv.android.xposed.IXposedHookLoadPackage {
                                 try {
                                     if (param.args != null && param.args.length > 0
                                         && param.args[0] instanceof Number) {
-                                        float target = getSpeedConfig();
                                         float cur = ((Number) param.args[0]).floatValue();
+                                        float target = getSpeedConfig();
+                                        // 捕获：感知抖音设置的倍速并跟随（抖音权限最高）
+                                        if (Math.abs(cur - target) > 0.01f) {
+                                            saveCapturedSpeed(cur);
+                                            target = cur;
+                                        }
                                         if (Math.abs(cur - target) > 0.01f && !isManual()) {
                                             param.args[0] = target;
                                             de.robv.android.xposed.XposedBridge.log(
@@ -215,8 +221,13 @@ public class MainHook implements de.robv.android.xposed.IXposedHookLoadPackage {
                                                     @Override
                                                     protected void beforeHookedMethod(MethodHookParam param) {
                                                         try {
-                                                            float target = getSpeedConfig();
                                                             float cur = (float) param.args[0];
+                                                            float target = getSpeedConfig();
+                                                            // 捕获：感知抖音设置的倍速并跟随（抖音权限最高）
+                                                            if (Math.abs(cur - target) > 0.01f) {
+                                                                saveCapturedSpeed(cur);
+                                                                target = cur;
+                                                            }
                                                             if (Math.abs(cur - target) > 0.01f && !isManual()) {
                                                                 param.args[0] = target;
                                                                 de.robv.android.xposed.XposedBridge.log(
@@ -248,6 +259,11 @@ public class MainHook implements de.robv.android.xposed.IXposedHookLoadPackage {
                             android.media.PlaybackParams params = (android.media.PlaybackParams) param.args[0];
                             float cur = params.getSpeed();
                             float target = getSpeedConfig();
+                            // 捕获：感知 MediaPlayer 的倍速变化（抖音权限最高）
+                            if (Math.abs(cur - target) > 0.01f) {
+                                saveCapturedSpeed(cur);
+                                target = cur;
+                            }
                             if (Math.abs(cur - 1.0f) < 0.01f && Math.abs(target - 1.0f) > 0.01f && !isManual()) {
                                 params.setSpeed(target);
                                 param.args[0] = params;
@@ -373,11 +389,80 @@ public class MainHook implements de.robv.android.xposed.IXposedHookLoadPackage {
     private static de.robv.android.xposed.XSharedPreferences prefs =
         new de.robv.android.xposed.XSharedPreferences("com.dyPlaySpeed.Onely", "speed");
 
+    private static de.robv.android.xposed.XSharedPreferences capturedPrefs = null;
+
+    private static void initCapturedPrefs(String pkg) {
+        try {
+            capturedPrefs = new de.robv.android.xposed.XSharedPreferences(pkg, "dy_speed_follow");
+        } catch (Throwable t) { /* 静默 */ }
+    }
+
     private static float getSpeedConfig() {
+        // 抖音设置的倍速拥有最高优先级
+        float captured = getCapturedSpeed();
+        if (captured > 0f) {
+            return captured;
+        }
+        // 回退：模块自己的配置
         try {
             prefs.reload();
             return prefs.getFloat("speed", 1.5f);
         } catch (Throwable t) { return 1.5f; }
+    }
+
+    private static float getCapturedSpeed() {
+        try {
+            if (capturedPrefs != null) {
+                capturedPrefs.reload();
+                return capturedPrefs.getFloat("speed", 0f);
+            }
+        } catch (Throwable t) { /* 静默 */ }
+        return 0f;
+    }
+
+    private static void saveCapturedSpeed(float speed) {
+        try {
+            android.app.Application app = (android.app.Application)
+                Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication")
+                    .invoke(null);
+            android.content.SharedPreferences sp = app.getSharedPreferences(
+                "dy_speed_follow", android.content.Context.MODE_PRIVATE);
+            android.content.SharedPreferences.Editor e = sp.edit();
+            e.remove("speed");
+            e.apply();
+            e.putFloat("speed", speed);
+            e.commit();
+            de.robv.android.xposed.XposedBridge.log(
+                "[抖音倍速] 捕获跟随倍速: " + speed + "x");
+
+            // 也尝试直接更新模块自己的 speed.xml（让 UI 同步显示）
+            try {
+                java.io.File prefsDir = new java.io.File(
+                    "/data/data/com.dyPlaySpeed.Onely/shared_prefs/");
+                prefsDir.mkdirs();
+                java.io.File prefsFile = new java.io.File(prefsDir, "speed.xml");
+                String xml = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n"
+                    + "<map>\n"
+                    + "    <float name=\"speed\" value=\"" + speed + "\" />\n"
+                    + "</map>\n";
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(prefsFile, false);
+                try {
+                    fos.write(xml.getBytes("UTF-8"));
+                    fos.flush();
+                } finally {
+                    fos.close();
+                }
+                de.robv.android.xposed.XposedBridge.log(
+                    "[抖音倍速] 已同步模块配置: " + speed + "x");
+            } catch (Throwable t) {
+                de.robv.android.xposed.XposedBridge.log(
+                    "[抖音倍速] 同步模块配置失败（不影响功能）: " + t.getMessage());
+            }
+        } catch (Throwable t) {
+            de.robv.android.xposed.XposedBridge.log(
+                "[抖音倍速] 保存跟随倍速失败: " + t.getMessage());
+        }
     }
 
     private static boolean isManual() {

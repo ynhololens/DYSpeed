@@ -16,7 +16,7 @@
         android:layout_weight="0"
         android:rotationX="0"
         android:rotationY="0"
-        android:text="测了抖音38.4.0;LSPAPI101,其余的自测!!!"
+        android:text="测了抖音38.4.0;LSPAPI101,其余的自测!!!,新版本地址:https://github.com/ynhololens/DYSpeed"
         android:textAppearance="@android:style/TextAppearance.Material.Large"
         android:textColor="#2EFF12" />
 

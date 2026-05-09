@@ -1,0 +1,81 @@
+plugins {
+    id 'com.android.application'
+}
+
+def getVersionCode(name) {
+    def parts = name.split("\\.")
+    int hotfix = parts[2] as int
+    int minor = parts[1] as int
+    int major = parts[0] as int
+    def versionCode = major * 1000000 + minor * 1000 + hotfix
+    println('Version Code: ' + versionCode)
+    return versionCode
+}
+
+android {
+    namespace 'com.dyPlaySpeed.Onely'
+    compileSdkVersion 34
+    defaultConfig {
+        applicationId "com.dyPlaySpeed.Onely"
+        minSdkVersion 26
+        targetSdkVersion 34
+        versionCode getVersionCode(appVersionName)
+        versionName appVersionName
+    }
+    signingConfigs {
+        debug {
+            storeFile file(System.getProperty('user.home') + '/.android/debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+
+        release {
+            if (System.getenv('SIGNING_KEY_ALIAS')) {
+                storeFile file('/tmp/keystore.jks')
+                storePassword System.getenv('SIGNING_STORE_PASSWORD')
+                keyAlias System.getenv('SIGNING_KEY_ALIAS')
+                keyPassword System.getenv('SIGNING_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+    }
+    buildFeatures {
+        prefab true
+        compose true
+    }
+
+    packagingOptions {
+        exclude 'META-INF/**'
+        exclude 'kotlin/**'
+        exclude 'google/**'
+        exclude '**.bin'
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    // Legacy Xposed API (兼容旧版)
+    compileOnly 'de.robv.android.xposed:api:82'
+    
+    // LSPosed Modern API 101 - Maven Central: io.github.libxposed
+    compileOnly 'io.github.libxposed:api:101.0.1'
+}
+

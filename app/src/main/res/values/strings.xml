@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">抖音播放倍速</string>
+    <string name="app_desc">抖音设置倍速 Xposed模块</string>
+    <string name="title_activity_main">抖音播放倍速</string>
+</resources>

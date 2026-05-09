@@ -1,0 +1,32 @@
+# LSPosed Module Scope List
+# 视频调速 VideoSpeed - 作用域列表
+# 每行一个包名，模块将只会hook这些应用
+
+# 哔哩哔哩 (B站)
+tv.danmaku.bili
+com.bilibili.app.in
+
+# Twitter/X
+com.twitter.android
+
+# 抖音 (Douyin)
+com.ss.android.ugc.aweme
+com.ss.android.ugc.aweme.lite
+com.ss.android.ugc.live
+com.ss.android.ugc.aweme.mobile
+
+# 小红书
+com.xingin.xhs
+
+# 微博
+com.sina.weibo
+
+# Instagram
+com.instagram.android
+com.instander.android
+
+# Telegram
+org.telegram.messenger
+
+# 微信 (视频号)
+com.tencent.mm

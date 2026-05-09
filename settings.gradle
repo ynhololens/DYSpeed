@@ -1,0 +1,19 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = "https://api.xposed.info" }
+        // LSPosed Modern API: https://github.com/libxposed/api
+        // API 101 已迁移到 Maven Central，无需额外仓库
+    }
+}
+rootProject.name = "bili"
+include ':app'

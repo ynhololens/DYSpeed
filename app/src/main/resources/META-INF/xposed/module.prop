@@ -1,0 +1,24 @@
+# LSPosed Module Configuration (Modern API)
+# 视频调速 VideoSpeed - Module Configuration
+
+# 模块最低支持的Xposed API版本
+# API 93 = LSPosed v1.8+, API 101 = LSPosed v1.9.2+ (最新)
+minApiVersion=93
+targetApiVersion=101
+
+# 是否静态作用域(禁止用户添加到作用域外的应用)
+# false = 用户可以手动添加到其他应用
+staticScope=false
+
+# 模块版本信息
+versionCode=1003000
+versionName=1.3.0
+
+# 作者信息
+author=MarsGao
+
+# 模块描述(将在模块界面显示)
+description=视频默认播放速度调节 v1.3.0 - 支持B站/抖音(38.x)/微信视频号/小红书等，新增Activity生命周期策略
+
+# 最低支持的Android版本
+minAndroidVersion=26

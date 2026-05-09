@@ -5,9 +5,7 @@ sync-release.ps1
 
 .DS_Store
 
-# Built application files
-*.apk
-*.aar
+# Built application files (apk tracked in release/)
 *.ap_
 *.aab
 
@@ -22,7 +20,7 @@ bin/
 gen/
 out/
 #  Uncomment the following line in case you need and you don't have the release build type files in your app
-release/
+/app/release/
 
 # Gradle files
 .gradle/

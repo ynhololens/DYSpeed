@@ -49,11 +49,16 @@
 
 ## 下载与构建
 
-仓库 `release/` 目录中的 `DYSpeed-v38.4.0.apk` 是**旧版 legacy 构建**，不能直接当作 API 102 版本使用。
-API 102 版本请自行构建：
+仓库 `release/` 目录中已提供 API 102 构建产物：
+
+- `DYSpeed-API102-20261124.apk`：当前版本模块（debug 签名，可直接安装）
+- `DYSpeed-API102-20261124.apk.sha256`：SHA-256 校验文件
+- `DYSpeed-v38.4.0.apk`：**旧版 legacy 构建**，不能当作 API 102 版本使用
+
+该产物已实测兼容抖音 38.4.0 与 41.2.0，按版本自动切换 Hook 策略。自行构建：
 
 ```bash
-./gradlew assembleRelease
+./gradlew assembleDebug
 ```
 
 DEBUG 包输出在 `app/build/outputs/apk/debug/app-debug.apk`。

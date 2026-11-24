@@ -19,10 +19,22 @@
   - 抖音设置 2.0x → 模块自动跟随 2.0x
   - 抖音设置 1.0x（正常）→ 模块放手，不干预
   - 抖音权限最高，模块 UI 配置仅作为无捕获值时的回退
-- **多策略 Hook**：覆盖 SimPlayer、MediaPlayer、Activity 反射等多种播放路径
-- **强制循环**：每 2 秒检查并保持倍速，持续 2 分钟
+- **多策略 Hook**：按抖音版本自动选择旧版 SimPlayer 路径或 41.x 新倍速路径；MediaPlayer、Activity 反射、配置拦截为通用策略
+- **强制循环**：每 2 秒检查并保持倍速，常驻运行（进程结束才停止）
 - **手动操作检测**：用户在抖音 UI 手动调倍速时，不拦截，直接捕获沿用
 - **不支持热重载**：模块含后台定时循环，`onHotReloading()` 返回 `false`；升级后请重启抖音
+
+## 版本兼容
+
+模块在 `onPackageReady` 读取抖音 `versionName` / `versionCode`，按主版本选择策略：
+
+| 抖音版本 | 使用策略 |
+|---|---|
+| 38.x（实测 38.4.0，versionCode 380401） | legacy：SimPlayer + 通用类扫描 |
+| 41.x 及以上（实测 41.2.0，versionCode 410201） | v41：`DSpeedPlayProvider.LLIIJI` + `X.1IJQ.LJJJJI` |
+| 版本信息读取失败 | 两套策略都尝试挂载，靠类加载失败静默跳过 |
+
+切换版本后只需重启抖音即可，不需要重装本模块。
 
 ## 如何使用
 
@@ -89,13 +101,15 @@ hook(method)
     });
 ```
 
-| 策略 | 目标类 | 方式 |
-|------|--------|------|
-| SimPlayer | `SimPlayer` | 显式 hook `setSpeed` / `setPlaySpeed` / `setPlaybackSpeed` / `setSpeedInMultiplier`，并在其余方法调用后补设倍速 |
-| 通用扫描 | AbsPlayer, Player, IMediaPlayer, HorizonPlayerController 等 | 逐类逐方法注册显式 hook |
-| MediaPlayer | `android.media.MediaPlayer` | 拦截 `setPlaybackParams` 并修改 `PlaybackParams` |
-| Activity 反射 | `Activity.onResume` | 反射扫描 Player/Session 字段 |
-| 配置拦截 | `SharedPreferencesImpl.getFloat` | 改写返回值 |
+| 策略 | 适用版本 | 目标类 | 方式 |
+|------|----------|--------|------|
+| SimPlayer | 38.x（legacy） | `SimPlayer` | 显式 hook `setSpeed` / `setPlaySpeed` / `setPlaybackSpeed` / `setSpeedInMultiplier`，并在其余方法调用后补设倍速 |
+| 通用扫描 | 38.x（legacy） | AbsPlayer, Player, IMediaPlayer, HorizonPlayerController 等 | 逐类逐方法注册显式 hook |
+| 倍速配置入口 | 41.x+ | `DSpeedPlayProvider.LLIIJI` | 改写配置对象 `LIZIZ` 字段 |
+| 播放器核心 | 41.x+ | `X.1IJQ.LJJJJI(F)` | 改写下发给播放器的倍速参数 |
+| MediaPlayer | 通用 | `android.media.MediaPlayer` | 拦截 `setPlaybackParams` 并修改 `PlaybackParams` |
+| Activity 反射 | 通用 | `Activity.onResume` | 反射扫描 Player/Session 字段 |
+| 配置拦截 | 通用 | `SharedPreferencesImpl.getFloat` | 改写返回值 |
 
 ## 许可
 

@@ -36,11 +36,24 @@ public class MainHook extends XposedModule {
 
     private static final String TAG = "DYSpeed";
     private static final long RETRY_DELAY_MS = 3000L;
+    /** 等待 Application 可用后再按版本挂载专属 Hook */
+    private static final long VERSION_DETECT_DELAY_MS = 500L;
     private static final long SPEED_FORCE_INTERVAL_MS = 2000L;
     private static final int MAX_PLAYER_FAILURES = 5;
     private static final String CAPTURED_PREFS = "dy_speed_follow";
     /** 升级后清理一次旧版误捕获的 1.0，避免它一直压住模块配置 */
     private static final String CAPTURED_FIX_MARKER = "captured_reset_fix_v1";
+
+    /** 抖音 41.x 新的倍速核心（旧 SimPlayer 已不存在） */
+    private static final String CLS_SPEED_PROVIDER =
+            "com.ss.android.ugc.aweme.o.oplayer.client.speed.provider.speed.DSpeedPlayProvider";
+    private static final String CLS_SPEED_CONFIG = "LX/0sli";
+    // dex 描述符是 LX/1IJQ;，Java 运行时二进制名是 X.1IJQ
+    private static final String CLS_PLAYER_CORE = "X.1IJQ";
+
+    /** 主版本号 >= 41（或 versionCode >= 410000）使用新架构策略 */
+    private static final int NEW_ARCH_MAJOR_VERSION = 41;
+    private static final long NEW_ARCH_MIN_VERSION_CODE = 410000L;
 
     public static final String HOOK_PACKAGE_DY0 = "com.ss.android.ugc.aweme";
     public static final String HOOK_PACKAGE_DY1 = "com.ss.android.ugc.aweme.lite";
@@ -53,11 +66,18 @@ public class MainHook extends XposedModule {
     private static final IdentityHashMap<Object, Integer> playerFailures = new IdentityHashMap<>();
 
     private volatile String processName = "";
+    private volatile String douyinVersion = "unknown";
+    private volatile boolean versionKnown = false;
+    private volatile boolean useLegacyHooks = true;
+    private volatile boolean useV41Hooks = false;
     private volatile boolean strategy1Hooked = false;
     private volatile boolean strategy2Hooked = false;
     private volatile boolean strategy3Hooked = false;
     private volatile boolean strategy4Hooked = false;
+    private volatile boolean v41SpeedHooked = false;
+    private volatile boolean v41PlayerHooked = false;
     private volatile boolean loopRunning = false;
+    private volatile boolean debugForceLogged = false;
 
     /** hook 进程内只读，来自模块 App 通过 libxposed service 写入的 RemotePreferences */
     private SharedPreferences modulePrefs;
@@ -78,6 +98,7 @@ public class MainHook extends XposedModule {
         try {
             modulePrefs = getRemotePreferences(PrefsConstants.PREFS_GROUP);
             logi("模块已加载，进程=" + processName);
+            debug("module loaded " + processName);
         } catch (Throwable t) {
             loge("RemotePreferences 不可用（使用默认倍速）: " + t);
         }
@@ -91,17 +112,18 @@ public class MainHook extends XposedModule {
             // 只处理主进程，避免子进程重复挂载
             if (!pkg.equals(processName)) return;
 
+            detectDouyinVersion(pkg);
+
             // 清理升级前残留的误捕获倍速（抖音切视频重置为1.0时被记成“用户设置”）
             clearStaleCapturedOnce();
 
             ClassLoader cl = param.getClassLoader();
-            safeHook(() -> hookSimPlayer(cl));
-            safeHook(() -> hookGeneralScan(cl));
+            // 以下为两个版本通用策略，立即挂载
             safeHook(this::hookMediaPlayer);
             safeHook(() -> hookActivity(cl));
             safeHook(this::hookPrefsRead);
-
-            scheduleRetryAndForce(cl);
+            // 版本专属 Hook 放到短延迟线程里，等 Application 可用来准确识别版本
+            scheduleRetryAndForce(cl, pkg);
         } catch (Throwable t) {
             loge("onPackageReady: " + t);
         }
@@ -120,6 +142,70 @@ public class MainHook extends XposedModule {
     private boolean isDouyinPackage(String pkg) {
         return HOOK_PACKAGE_DY0.equals(pkg) || HOOK_PACKAGE_DY1.equals(pkg)
                 || HOOK_PACKAGE_DY2.equals(pkg) || HOOK_PACKAGE_DY3.equals(pkg);
+    }
+
+    /**
+     * 按抖音版本选择策略：38.x 用 SimPlayer 旧路径，41.x 用 DSpeedPlayProvider / X.1IJQ 新路径。
+     * 版本号取不到时两套都挂，靠 loadClass 失败静默跳过，保证未知版本仍有兼容性。
+     */
+    private void detectDouyinVersion(String pkg) {
+        String name = null;
+        long code = -1L;
+        android.content.pm.PackageInfo pi = null;
+        try {
+            Application app = currentApplication();
+            if (app != null) pi = app.getPackageManager().getPackageInfo(pkg, 0);
+        } catch (Throwable ignored) { /* 稍后重试 */ }
+        if (pi == null) {
+            try {
+                // onPackageReady 阶段 Application 可能还没实例化，退而用系统 Context
+                Object at = Class.forName("android.app.ActivityThread")
+                        .getMethod("currentActivityThread").invoke(null);
+                Object ctx = at.getClass().getMethod("getSystemContext").invoke(at);
+                if (ctx instanceof Context) {
+                    pi = ((Context) ctx).getPackageManager().getPackageInfo(pkg, 0);
+                }
+            } catch (Throwable ignored) { /* 稍后重试 */ }
+        }
+        if (pi != null) {
+            name = pi.versionName;
+            code = pi.getLongVersionCode();
+        }
+
+        int major = parseMajorVersion(name);
+        boolean known = false;
+        boolean newArch = false;
+        if (major > 0) {
+            known = true;
+            newArch = major >= NEW_ARCH_MAJOR_VERSION;
+        } else if (code > 0) {
+            known = true;
+            newArch = code >= NEW_ARCH_MIN_VERSION_CODE;
+        }
+
+        useLegacyHooks = !known || !newArch;
+        useV41Hooks = !known || newArch;
+        versionKnown = known;
+        douyinVersion = (name == null ? "?" : name) + " (" + code + ")";
+        logi("抖音版本 " + douyinVersion + " -> "
+                + (useV41Hooks && !useLegacyHooks ? "v41 新策略"
+                : useLegacyHooks && !useV41Hooks ? "legacy 旧策略" : "双策略兼容"));
+        debug("version " + douyinVersion + " newArch=" + newArch + " known=" + known);
+    }
+
+    private static int parseMajorVersion(String versionName) {
+        if (versionName == null) return -1;
+        int i = 0;
+        int len = versionName.length();
+        while (i < len && !Character.isDigit(versionName.charAt(i))) i++;
+        int start = i;
+        while (i < len && Character.isDigit(versionName.charAt(i))) i++;
+        if (start == i) return -1;
+        try {
+            return Integer.parseInt(versionName.substring(start, i));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     /** 任何被识别的播放器都登记进来，切视频后新播放器也能被后续循环覆盖 */
@@ -155,15 +241,30 @@ public class MainHook extends XposedModule {
 
     // ==================== 延迟重试 + 强制倍速 ====================
 
-    private void scheduleRetryAndForce(final ClassLoader cl) {
+    private void scheduleRetryAndForce(final ClassLoader cl, final String pkg) {
         new Thread(() -> {
             try {
-                Thread.sleep(RETRY_DELAY_MS);
+                Thread.sleep(VERSION_DETECT_DELAY_MS);
             } catch (InterruptedException e) {
                 return;
             }
-            if (!strategy1Hooked) safeHook(() -> hookSimPlayer(cl));
-            if (!strategy2Hooked) safeHook(() -> hookGeneralScan(cl));
+            if (!versionKnown) detectDouyinVersion(pkg);
+
+            // 按版本挂载专属 Hook（未知版本时两套都挂）
+            if (useLegacyHooks) {
+                if (!strategy1Hooked) safeHook(() -> hookSimPlayer(cl));
+                if (!strategy2Hooked) safeHook(() -> hookGeneralScan(cl));
+            }
+            if (useV41Hooks) {
+                safeHook(() -> hookV41SpeedProvider(cl));
+                safeHook(() -> hookV41PlayerCore(cl));
+            }
+
+            try {
+                Thread.sleep(Math.max(0L, RETRY_DELAY_MS - VERSION_DETECT_DELAY_MS));
+            } catch (InterruptedException e) {
+                return;
+            }
             if (!strategy3Hooked) safeHook(this::hookMediaPlayer);
             if (!strategy4Hooked) safeHook(() -> hookActivity(cl));
             safeHook(this::hookPrefsRead);
@@ -448,6 +549,10 @@ public class MainHook extends XposedModule {
         if (callMethodQuiet(obj, "setSpeed", speed)) return true;
         if (callMethodQuiet(obj, "setPlaySpeed", speed)) return true;
         if (callMethodQuiet(obj, "setPlaybackSpeed", speed)) return true;
+        if (callMethodQuiet(obj, "setSpeedRatio", speed)) return true;
+        // 抖音 41.x 混淆后的方法名
+        if (callMethodQuiet(obj, "LJJJJI", speed)) return true;
+        if (callMethodQuiet(obj, "LJJIII", speed)) return true;
         if (obj instanceof MediaPlayer) {
             try {
                 MediaPlayer mp = (MediaPlayer) obj;
@@ -458,6 +563,120 @@ public class MainHook extends XposedModule {
             } catch (Throwable t) { /* 忽略 */ }
         }
         return false;
+    }
+
+    // ==================== 抖音 41.x 新增策略 ====================
+
+    /**
+     * 新架构：DSpeedPlayProvider.LLIIJI(LX/0sli;) 是倍速配置的统一入口，
+     * 参数对象的 LIZIZ 字段就是要设置的倍速。
+     */
+    private void hookV41SpeedProvider(ClassLoader cl) {
+        if (v41SpeedHooked) return;
+        try {
+            Class<?> provider = cl.loadClass(CLS_SPEED_PROVIDER);
+            Method method = null;
+            for (Method m : provider.getDeclaredMethods()) {
+                if ("LLIIJI".equals(m.getName()) && m.getParameterTypes().length == 1) {
+                    method = m;
+                    break;
+                }
+            }
+            if (method == null) {
+                debug("v41 speed provider method not found");
+                return;
+            }
+
+            addHook(method, chain -> {
+                try {
+                    List<Object> args = chain.getArgs();
+                    if (!args.isEmpty() && args.get(0) != null) {
+                        Object cfg = args.get(0);
+                        Field field = findField(cfg.getClass(), "LIZIZ");
+                        if (field != null && field.getType() == float.class) {
+                            float cur = field.getFloat(cfg);
+                            float target = getSpeedConfig();
+                            if (Math.abs(cur - target) > 0.01f && shouldCapture(cur)) {
+                                saveCapturedSpeed(cur);
+                                target = cur;
+                            }
+                            if (Math.abs(cur - target) > 0.01f && !isManual()) {
+                                field.setFloat(cfg, target);
+                                debug("v41 provider " + cur + "->" + target);
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    debug("v41 provider err: " + t);
+                }
+                return chain.proceed();
+            });
+            v41SpeedHooked = true;
+            logi("抖音41 倍速配置入口已挂载");
+            debug("v41 provider hooked");
+        } catch (Throwable t) {
+            loge("抖音41 倍速配置入口挂载失败: " + t);
+            debug("v41 provider hook fail: " + t);
+        }
+    }
+
+    /** 新架构：LX/1IJQ.LJJJJI(F) 是播放器核心真正下发的倍速方法 */
+    private void hookV41PlayerCore(ClassLoader cl) {
+        if (v41PlayerHooked) return;
+        try {
+            Class<?> core = cl.loadClass(CLS_PLAYER_CORE);
+            Method method = findMethod(core, "LJJJJI", float.class);
+            if (method == null) {
+                debug("v41 player core method not found");
+                return;
+            }
+
+            addHook(method, chain -> {
+                Object[] newArgs = null;
+                try {
+                    registerPlayer(chain.getThisObject());
+                    List<Object> args = chain.getArgs();
+                    if (!args.isEmpty() && args.get(0) instanceof Number) {
+                        float cur = ((Number) args.get(0)).floatValue();
+                        float target = getSpeedConfig();
+                        if (Math.abs(cur - target) > 0.01f && shouldCapture(cur)) {
+                            saveCapturedSpeed(cur);
+                            target = cur;
+                        }
+                        if (Math.abs(cur - target) > 0.01f && !isManual()) {
+                            newArgs = args.toArray();
+                            newArgs[0] = target;
+                            debug("v41 core " + cur + "->" + target);
+                        }
+                    }
+                } catch (Throwable t) {
+                    debug("v41 core err: " + t);
+                }
+                return newArgs != null ? chain.proceed(newArgs) : chain.proceed();
+            });
+            v41PlayerHooked = true;
+            logi("抖音41 播放器核心已挂载");
+            debug("v41 core hooked");
+        } catch (Throwable t) {
+            loge("抖音41 播放器核心挂载失败: " + t);
+            debug("v41 core hook fail: " + t);
+        }
+    }
+
+    private static Field findField(Class<?> clz, String name) {
+        Class<?> c = clz;
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException ignored) {
+                c = c.getSuperclass();
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+        return null;
     }
 
     // ==================== 策略5: 拦截配置读取 ====================
@@ -508,6 +727,16 @@ public class MainHook extends XposedModule {
                     if (activity != null) scanActivity(activity);
 
                     float target = getSpeedConfig();
+                    if (!debugForceLogged) {
+                        debugForceLogged = true;
+                        debug("force loop target=" + target
+                                + " version=" + douyinVersion
+                                + " mode=" + (useV41Hooks && !useLegacyHooks ? "v41"
+                                : useLegacyHooks && !useV41Hooks ? "legacy" : "both")
+                                + " players=" + discoveredPlayers.size()
+                                + " v41Provider=" + v41SpeedHooked
+                                + " v41Core=" + v41PlayerHooked);
+                    }
                     if (Math.abs(target - 1.0f) > 0.01f) {
                         synchronized (discoveredPlayers) {
                             for (int i = discoveredPlayers.size() - 1; i >= 0; i--) {
@@ -740,6 +969,23 @@ public class MainHook extends XposedModule {
         if (type == double.class) return Double.class;
         if (type == char.class) return Character.class;
         return Void.class;
+    }
+
+    /** 临时诊断日志：写到抖音自己的外部文件目录，方便 adb pull 查看 Hook 是否触发 */
+    private void debug(String msg) {
+        try {
+            Application app = currentApplication();
+            if (app == null) return;
+            java.io.File dir = app.getExternalFilesDir(null);
+            if (dir == null) return;
+            java.io.File file = new java.io.File(dir, "dyspeed-hook.log");
+            java.io.FileWriter writer = new java.io.FileWriter(file, true);
+            writer.write(new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date()));
+            writer.write(" ");
+            writer.write(msg);
+            writer.write("\n");
+            writer.close();
+        } catch (Throwable ignored) { /* 诊断日志失败不影响功能 */ }
     }
 
     private void logi(String msg) {

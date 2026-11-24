@@ -1,6 +1,16 @@
-# DYSpeed - 抖音视频倍速控制 (LSPosed/Xposed模块)
+# DYSpeed - 抖音视频倍速控制（LSPosed API 102 / libxposed）
 
 自动控制抖音播放倍速，支持**跟随模式**——自动捕获抖音的倍速设置并沿用。
+
+## 环境要求
+
+- **框架**：LSPosed 2.1/2.2+（需实现 libxposed API 102）；旧版 LSPosed / XposedBridge 无法加载本模块
+- **系统**：Android 8.0（API 26）及以上
+- **编译**：JDK 17 + Android SDK 36（libxposed API 102 的 class 文件为 Java 17，service AAR 要求 compileSdk ≥ 36）
+
+> API 102 禁止模块调用 `de.robv.android.xposed.*` 遗留 API，本仓库已完成迁移：
+> 入口改为 `META-INF/xposed/java_init.list` + `XposedModule`，Hook 改为拦截器链模型，
+> 配置读取改为 RemotePreferences。不能与 legacy 版本混用。
 
 ## 功能
 
@@ -12,6 +22,7 @@
 - **多策略 Hook**：覆盖 SimPlayer、MediaPlayer、Activity 反射等多种播放路径
 - **强制循环**：每 2 秒检查并保持倍速，持续 2 分钟
 - **手动操作检测**：用户在抖音 UI 手动调倍速时，不拦截，直接捕获沿用
+- **不支持热重载**：模块含后台定时循环，`onHotReloading()` 返回 `false`；升级后请重启抖音
 
 ## 如何使用
 
@@ -21,15 +32,25 @@
 4. 模块自动捕获该倍速，后续视频皆以此倍速播放
 5. 如需更换倍速，在抖音中重新调整即可
 
-## 下载
+模块 UI 通过 libxposed service 的 **RemotePreferences** 读写配置；若提示“Xposed 服务未连接”，
+请确认 LSPosed 已启用本模块，并至少打开过一次模块 App。
 
-预编译模块 APK 位于仓库的 [`release/`](release/) 目录：
+## 下载与构建
 
-| 文件 | 版本 | 说明 |
-|------|------|------|
-| [`DYSpeed-v38.4.0.apk`](release/DYSpeed-v38.4.0.apk) | v38.4.0 | 最新版，支持抖音 38.4.0 |
+仓库 `release/` 目录中的 `DYSpeed-v38.4.0.apk` 是**旧版 legacy 构建**，不能直接当作 API 102 版本使用。
+API 102 版本请自行构建：
 
-下载后在 LSPosed 中激活并勾选抖音即可使用。
+```bash
+./gradlew assembleRelease
+```
+
+DEBUG 包输出在 `app/build/outputs/apk/debug/app-debug.apk`。
+
+Release 签名需要环境变量 `SIGNING_KEY_ALIAS` / `SIGNING_STORE_PASSWORD` / `SIGNING_KEY_PASSWORD`，
+密钥文件放在 `/tmp/keystore.jks`（可按本地环境修改 `app/build.gradle` 的 `signingConfigs.release`）。
+
+> 依赖说明：`io.github.libxposed:service:102.0.0` 要求 compileSdk 37，超出 AGP 8.13.2 支持范围，
+> 因此使用兼容 API 102 框架的 `service:101.0.0`（RemotePreferences 能力一致）。
 
 ## 目标应用
 
@@ -38,36 +59,43 @@
 - com.ss.android.ugc.live（抖音火山版）
 - com.ss.android.ugc.aweme.mobile
 
-## 构建
-
-```bash
-./gradlew assembleRelease
-```
-
 ## 技术细节
 
 ### 跟随模式实现
 
 ```
 抖音 setSpeed(2.0)
-  → beforeHookedMethod 捕获 2.0
+  → Hook 拦截器前置逻辑捕获 2.0
   → 写入抖音进程 dy_speed_follow.xml（持久化）
-  → 同步更新模块 speed.xml（UI 同步显示）
   → getSpeedConfig() 优先返回捕获值
   → 强制循环保持此倍速
 ```
 
-捕获的倍速存储在抖音进程数据目录下（`dy_speed_follow.xml`），持久化生效。
+> API 102 下 hook 进程中的 RemotePreferences 是只读的，因此不再把捕获值回写到模块 App 的
+> `speed.xml`；模块 UI 显示的是用户配置值，而不是运行时捕获值。
 
-### Hook 策略
+### Hook 模型（libxposed API 102）
+
+```java
+hook(method)
+    .setId("dyspeed.xxx")
+    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+    .intercept(chain -> {
+        List<Object> args = chain.getArgs();   // 不可变 List，不能直接 set
+        Object[] newArgs = args.toArray();
+        newArgs[0] = 2.0f;
+        Object result = chain.proceed(newArgs); // 用新参数放行
+        return result;                          // 返回值直接改写
+    });
+```
 
 | 策略 | 目标类 | 方式 |
 |------|--------|------|
-| SimPlayer | com.ss.android.ugc.aweme.video.simplayer.SimPlayer | 拦截 setSpeed/setPlaySpeed/setPlaybackSpeed |
-| 通用扫描 | AbsPlayer, Player, IMediaPlayer, HorizonPlayerController 等 | 按方法名+签名 Hook |
-| MediaPlayer | android.media.MediaPlayer | 拦截 setPlaybackParams |
-| Activity 反射 | Activity.onResume | 反射扫描 Player/Session 字段 |
-| 配置拦截 | SharedPreferencesImpl.getFloat | 返回值替换 |
+| SimPlayer | `SimPlayer` | 显式 hook `setSpeed` / `setPlaySpeed` / `setPlaybackSpeed` / `setSpeedInMultiplier`，并在其余方法调用后补设倍速 |
+| 通用扫描 | AbsPlayer, Player, IMediaPlayer, HorizonPlayerController 等 | 逐类逐方法注册显式 hook |
+| MediaPlayer | `android.media.MediaPlayer` | 拦截 `setPlaybackParams` 并修改 `PlaybackParams` |
+| Activity 反射 | `Activity.onResume` | 反射扫描 Player/Session 字段 |
+| 配置拦截 | `SharedPreferencesImpl.getFloat` | 改写返回值 |
 
 ## 许可
 

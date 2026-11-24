@@ -10,10 +10,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = "https://api.xposed.info" }
-        // LSPosed Modern API: https://github.com/libxposed/api
-        // API 101 已迁移到 Maven Central，无需额外仓库
+        // libxposed api / service 102.x 均在 Maven Central，无需 xposed.info
     }
 }
-rootProject.name = "bili"
+rootProject.name = "DYSpeed"
 include ':app'

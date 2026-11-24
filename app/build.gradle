@@ -14,7 +14,8 @@ def getVersionCode(name) {
 
 android {
     namespace 'com.dyPlaySpeed.Onely'
-    compileSdkVersion 34
+    // libxposed service AAR 要求 compileSdk >= 36
+    compileSdkVersion 36
     defaultConfig {
         applicationId "com.dyPlaySpeed.Onely"
         minSdkVersion 26
@@ -50,32 +51,30 @@ android {
             signingConfig signingConfigs.release
         }
     }
-    buildFeatures {
-        prefab true
-        compose true
-    }
-
+    // 注意：不能 exclude 'META-INF/**'，否则会把 META-INF/xposed/ 下的
+    // java_init.list / module.prop / scope.list 从 APK 中排除，导致模块无法被识别。
     packagingOptions {
-        exclude 'META-INF/**'
-        exclude 'kotlin/**'
-        exclude 'google/**'
-        exclude '**.bin'
         resources {
-            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+            excludes += ['/META-INF/{AL2.0,LGPL2.1}', 'kotlin/**', 'google/**', '**.bin']
         }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        // libxposed API 102 的 class 文件为 Java 17
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 }
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
-    // Legacy Xposed API (兼容旧版)
-    compileOnly 'de.robv.android.xposed:api:82'
-    
-    // LSPosed Modern API 101 - Maven Central: io.github.libxposed
-    compileOnly 'io.github.libxposed:api:101.0.1'
+
+    // libxposed API 102（只参与编译，不打入 APK）
+    compileOnly 'io.github.libxposed:api:102.0.0'
+
+    // 模块 App 侧的 Xposed service 桥接：把普通配置暴露为 RemotePreferences
+    // 供 hook 进程通过 XposedInterface.getRemotePreferences() 只读访问
+    // service 102.0.0 要求 compileSdk 37（AGP 8.13.2 最高支持 36），
+    // 因此使用兼容 API 102 框架的 service 101.0.0（同样提供 RemotePreferences）
+    implementation 'io.github.libxposed:service:101.0.0'
 }
 
